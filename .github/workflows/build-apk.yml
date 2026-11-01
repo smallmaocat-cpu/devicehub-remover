@@ -1,5 +1,4 @@
 name: Build APK
-
 on:
   push:
     branches: [ main ]
@@ -7,7 +6,6 @@ on:
 
 permissions:
   contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,14 +18,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-
-      # 固定签名：从 Secret 解出一份固定的 keystore。
-      # 不配也没关系，下面会把 KEYSTORE_PATH 设成空串，build.gradle 自动退回 debug 签名。
+      # 固定签名：有 Secret 就解出 keystore，没有则把 KEYSTORE_PATH 置空，build.gradle 退回 debug。
       - name: Decode keystore
         id: keystore
         run: |
@@ -39,7 +34,6 @@ jobs:
             echo "path=" >> "$GITHUB_OUTPUT"
             echo "未配置 KEYSTORE_BASE64，本次使用 debug 签名"
           fi
-
       - name: Build release APK
         env:
           KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
@@ -47,12 +41,11 @@ jobs:
           KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle assembleRelease --no-daemon --stacktrace
-
       - name: Collect APK
         run: |
           mkdir -p dist
-          # 用纯 ASCII 文件名：中文名在上传 release 资产时会被规范化成 ".-"，看着像乱码
-          cp app/build/outputs/apk/release/app-release.apk dist/DeviceHub-cleaner-v1.0.3.apk
+          # 纯 ASCII 文件名：中文名上传 release 资产时会被规范化成 ".-"，看着像乱码
+          cp app/build/outputs/apk/release/app-release.apk dist/DeviceHub-cleaner-v1.0.4.apk
           ls -l dist
 
       - name: Upload artifact
@@ -60,33 +53,27 @@ jobs:
         with:
           name: DeviceHub-cleaner-apk
           path: dist/*.apk
-
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.3
-          name: DeviceHub 清理器 v1.0.3
+          tag_name: v1.0.4
+          name: DeviceHub 清理器 v1.0.4
           body: |
-            由 GitHub Actions 自动编译的 APK。
+            由 GitHub Actions 编译。
 
-            本版新增（日志自动回传）：
-            - 清理跑完后，可以自动把生成的日志文本发送到你填写的地址，不用再手动导出
-            - 完全可选，默认关闭。设置里填「回传地址」才会生效，留空就什么都不发，日志依旧只留本机
-            - 支持两种常见接收方式，填不同地址自动切换，不用改代码
-              1) 自建接口 / 图床 / 论坛接口：按 multipart/form-data 上传，文件字段名 file，另带 device、android、app、log_name 四个文本字段
-              2) Telegram Bot：填 https://api.telegram.org/bot<TOKEN>/sendDocument，再填 chat_id，会以「文档 + 说明」的形式发到会话里
-            - 「回传地址」「chat_id」「清理后自动回传」三个开关都在设置面板里；日志面板还有「立即回传」按钮，可随时手动补发当前这份日志
-            - 上传在后台线程执行，最多 60 秒，失败不影响清理，也不会卡界面；超长日志只发送前 512 KB
-            - 引导页隐私说明同步更新为：日志默认只保存在本机，只有打开「日志回传」后才会把日志文本发送到你填写的地址
+            本版：
+            - 全量文案压缩：更短、术语化，去掉说明腔
+            - release 启用 R8 混淆 + 资源收缩；JS 桥、Activity 已加 keep 规则
+            - 日志回传、9 阶段清理、守护模式逻辑不变
 
-            签名说明：
-            - 仓库里配好 KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEYSTORE_ALIAS / KEY_PASSWORD 四个 Secret 后，CI 会用同一份固定 keystore 签名，之后可以直接覆盖安装升级
-            - 没配这几个 Secret 时，仍是用每次构建临时生成的 debug 签名，安卓会当成不同应用，升级前必须先卸载（会丢设置和旧日志）
-            - 具体配法见 README 的「固定签名」一节
+            签名：
+            - 配好 `KEYSTORE_*` 四个 Secret → 固定签名，可覆盖升级
+            - 未配 → debug 签名，升级前须卸载（丢设置与旧日志）
+            - 配法见 README「固定签名」
 
-            功能：
-            - 界面：沿用 KernelSU WebUI 的 9 阶段进度界面，每个阶段可展开看说明与本次结论
-            - 执行：通过 su -c 运行 assets/bin/dh-clean.sh
-            - 日志：默认写到 /sdcard/DeviceHub清理日志，可在设置里改
-          files: dist/DeviceHub-cleaner-v1.0.3.apk
+            用法：
+            - 首启为权限说明页，点「检测 Root 权限」授权；3 秒后进主界面
+            - 日志默认写 /sdcard/DeviceHub清理日志
+            - 可选日志回传：multipart/form-data（字段 file）或 Telegram sendDocument
+          files: dist/DeviceHub-cleaner-v1.0.4.apk
           fail_on_unmatched_files: true

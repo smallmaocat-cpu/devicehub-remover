@@ -48,15 +48,10 @@ import java.util.concurrent.TimeUnit;
 /**
  * DeviceHub 清理器 · APK 外壳
  *
- * 启动流程：
- *   1. 先显示原生「权限说明」引导页，说明 Root 只用于扫描 DeviceHub 与保存日志；
- *   2. 用户点「检测 Root 权限」→ 触发 root 管理器授权弹窗，实时反馈结果；
- *   3. 无论授权成功与否，3 秒后自动进入 WebView 主界面。
+ * 流程：引导页检测 Root → 3 秒后进入 WebView。
  *
- * 注意：WebView 必须等引导页检测完再 loadUrl。因为 assets/webui/bridge.js 在页面加载时会
- * 同步调用 AndroidShell.isRoot()，如果提前加载且当时还没授权，界面会永久停在「预览模式」。
- *
- * 运行状态、配置、日志都在 files/dh 下，通过 DH_BASE / MODDIR 环境变量传给脚本。
+ * 检测后再 loadUrl；bridge.js 首帧若取到未授权会停在预览模式。
+ * 状态、配置、日志均在 files/dh，经 DH_BASE / MODDIR 传给脚本。
  */
 public class MainActivity extends Activity {
 
@@ -110,7 +105,7 @@ public class MainActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(COLOR_BG);
 
-        // 主界面容器：WebView 先建好但不加载页面、不可见，等引导页检测完再放出来
+        // 主界面容器：先建好，检测完再加载
         FrameLayout mainHost = new FrameLayout(this);
         mainHost.setBackgroundColor(COLOR_BG);
         web = new WebView(this);
@@ -192,7 +187,7 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER);
         col.addView(title, wrapLp(4));
 
-        TextView sub = label("首次启动 · 权限说明", 13f, COLOR_MUTED, false);
+        TextView sub = label("首次启动 · 权限", 13f, COLOR_MUTED, false);
         sub.setGravity(Gravity.CENTER);
         col.addView(sub, wrapLp(20));
 
@@ -205,25 +200,25 @@ public class MainActivity extends Activity {
 
         cardBox.addView(label("需要 Root 权限", 16f, COLOR_FG, true), wrapLp(9));
         cardBox.addView(label(
-                "要清理 DeviceHub 残留，必须读取系统私有目录。Root 权限仅用于以下两件事：",
+                "清理残留需读取系统私有目录。Root 仅用于两件事：",
                 13.5f, COLOR_MUTED, false), wrapLp(13));
 
-        addItem(cardBox, "1", "扫描 DeviceHub 相关文件",
-                "查找 com.devicehub.agent 在 /data/data、/data/user_de/0、/sdcard/Android/data 等路径下的残留。");
-        addItem(cardBox, "2", "写入与保存清理日志",
-                "把中文过程日志和总结文件写到 /sdcard/DeviceHub清理日志（路径可在设置里改）。");
+        addItem(cardBox, "1", "扫描残留文件",
+                "查 com.devicehub.agent 在 /data/data、/data/user_de/0、/sdcard/Android/data 下的残留。");
+        addItem(cardBox, "2", "写入清理日志",
+                "过程日志与摘要写到 /sdcard/DeviceHub清理日志（可改）。");
         cardBox.addView(label(
-                "除此之外不会读取、修改任何其它数据。日志默认只保存在本机；只有在设置里打开「日志回传」后，才会把日志文本发送到你填写的地址。",
+                "不读写其它数据。日志默认仅存本机，开启回传才外发。",
                 12f, COLOR_MUTED, false), wrapLp(0));
 
         // 检测状态
-        guideStatus = label("尚未检测", 13f, COLOR_MUTED, false);
+        guideStatus = label("未检测", 13f, COLOR_MUTED, false);
         guideStatus.setGravity(Gravity.CENTER);
         col.addView(guideStatus, wrapLp(11));
 
         // 主按钮
         guideBtn = new TextView(this);
-        guideBtn.setText("检测 Root 权限");
+        guideBtn.setText("检测 Root");
         guideBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
         guideBtn.setTextColor(COLOR_ON_ACCENT);
         guideBtn.setTypeface(Typeface.DEFAULT_BOLD);
@@ -241,11 +236,11 @@ public class MainActivity extends Activity {
         col.addView(guideBtn, btnLp);
 
         // 倒计时提示
-        guideHint = label("点按钮后无论结果如何，都会在 3 秒后进入主界面", 11.5f, COLOR_MUTED, false);
+        guideHint = label("3 秒后自动进入主界面", 11.5f, COLOR_MUTED, false);
         guideHint.setGravity(Gravity.CENTER);
         col.addView(guideHint, wrapLp(14));
 
-        TextView bottom = label("未授权也能进入主界面，只是清理功能不可用。", 11.5f, COLOR_MUTED, false);
+        TextView bottom = label("未授权可进主界面，清理功能不可用。", 11.5f, COLOR_MUTED, false);
         bottom.setGravity(Gravity.CENTER);
         col.addView(bottom, wrapLp(0));
 
@@ -285,13 +280,13 @@ public class MainActivity extends Activity {
 
         guideBtn.setBackground(rect(COLOR_BTN_OFF, 0, 14f));
         guideBtn.setTextColor(COLOR_MUTED);
-        guideBtn.setText("正在请求 Root 权限…");
+        guideBtn.setText("请求 Root 权限…");
         guideBtn.setEnabled(false);
 
         guideStatus.setTextColor(COLOR_MUTED);
-        guideStatus.setText("请在弹出的系统窗口里点「允许」");
+        guideStatus.setText("在系统弹窗中点「允许」");
         guideHint.setTextColor(COLOR_MUTED);
-        guideHint.setText("正在等待 root 管理器的授权结果…");
+        guideHint.setText("等待授权结果…");
 
         pool.execute(new Runnable() {
             @Override
@@ -307,7 +302,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** 真正去执行 su，这一步才会触发 root 管理器的授权弹窗 */
+    /** 实际执行 su，此处才弹授权 */
     private boolean probeRoot() {
         String out = execProc(new String[]{"su", "-c", "id"}, ROOT_PROMPT_TIMEOUT_MS);
         if (out == null) {
@@ -330,7 +325,7 @@ public class MainActivity extends Activity {
             guideBtn.setText("已授权");
         } else {
             guideStatus.setTextColor(COLOR_WARN);
-            guideStatus.setText("✗ 未获得 Root 权限，主界面将以只读模式运行");
+            guideStatus.setText("✗ 未获授权，只读模式");
             guideBtn.setBackground(rect(COLOR_BTN_OFF, 0, 14f));
             guideBtn.setTextColor(COLOR_MUTED);
             guideBtn.setText("检测结束");
@@ -444,11 +439,11 @@ public class MainActivity extends Activity {
         File base = new File(getFilesDir(), "dh");
         File bin = new File(base, "bin");
         if (!bin.isDirectory() && !bin.mkdirs() && !bin.isDirectory()) {
-            throw new IOException("无法创建目录: " + bin);
+            throw new IOException("无法建立目录: " + bin);
         }
         File script = new File(bin, "dh-clean.sh");
         copyAsset(SCRIPT_ASSET, script);
-        // 脚本需要可执行位；root shell 里用 sh 调用，不依赖它，但保持正确更稳
+        // 补可执行位
         script.setReadable(true, false);
         script.setExecutable(true, false);
         return base;
@@ -495,7 +490,7 @@ public class MainActivity extends Activity {
             });
         }
 
-        /** 同步判断是否有 root（页面加载时调一次；此时引导页已经授权过，不会再弹窗） */
+        /** 同步判断 root（页面加载时调一次） */
         @JavascriptInterface
         public boolean isRoot() {
             String out = execProc(new String[]{"su", "-c", "id"}, ROOT_PROMPT_TIMEOUT_MS);
@@ -517,7 +512,7 @@ public class MainActivity extends Activity {
             return baseDir.getAbsolutePath();
         }
 
-        /** 把日志文件回传到指定地址；后台线程执行，完成后回调 JS */
+        /** 回传日志到指定地址；后台线程，完成后回调 JS */
         @JavascriptInterface
         public void uploadLog(final String path, final String url,
                               final String chatId, final String requestId) {
@@ -549,23 +544,23 @@ public class MainActivity extends Activity {
 
     /* ---------------- 日志回传 ---------------- */
 
-    /** 单次最多回传 512KB，避免超大日志把请求撑爆 */
+    /** 单次上限 512KB */
     private static final int UPLOAD_MAX_BYTES = 512 * 1024;
 
     private String doUpload(String path, String urlRaw, String chatId) {
         String url = urlRaw == null ? "" : urlRaw.trim();
         if (url.isEmpty()) {
-            return "ERR 没有配置回传地址";
+            return "ERR 未配置地址";
         }
         if (path == null || path.trim().isEmpty()) {
-            return "ERR 没有日志路径";
+            return "ERR 无日志路径";
         }
         File f = new File(path.trim());
         if (!f.isFile()) {
-            return "ERR 日志文件不存在: " + f.getAbsolutePath();
+            return "ERR 文件不存在: " + f.getAbsolutePath();
         }
         if (f.length() <= 0L) {
-            return "ERR 日志文件是空的";
+            return "ERR 文件为空";
         }
         byte[] data = readHead(f, UPLOAD_MAX_BYTES);
         String boundary = "----DeviceHubBoundary" + System.currentTimeMillis();
@@ -655,7 +650,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 只读取文件开头 max 字节，日志太大时不整份塞进内存 */
+    /** 只读开头 max 字节 */
     private byte[] readHead(File f, int max) {
         int cap = (int) Math.min(f.length(), (long) max);
         byte[] buf = new byte[cap];
@@ -700,7 +695,7 @@ public class MainActivity extends Activity {
     private String runShell(String cmd) {
         String out = execProc(new String[]{"su", "-c", cmd}, 0L);
         if (out == null) {
-            // 没有 su：降级用普通 shell，界面上会因为权限不足而报错，但不会崩
+            // 无 su：降级普通 shell
             out = execProc(new String[]{"/system/bin/sh", "-c", cmd}, 0L);
         }
         return out == null ? "" : out;
@@ -711,7 +706,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * @param timeoutMs 大于 0 时，超时就放弃并返回 null（root 授权弹窗可能一直不响应）
+     * @param timeoutMs 超时返回 null（授权弹窗可能不响应）
      */
     private String execProc(String[] argv, long timeoutMs) {
         Process p = null;

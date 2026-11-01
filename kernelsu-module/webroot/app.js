@@ -1,6 +1,4 @@
-/* DeviceHub 清理器 · WebUI 逻辑
- * 在 KernelSU 的 WebUI 里运行（有 root 权限），也可以在普通浏览器里预览界面。
- */
+/* DeviceHub 清理器 · WebUI */
 
 var STATE_FILE = '/data/adb/devicehub-remover/state.ini';
 var LIVE_FILE = '/data/adb/devicehub-remover/live.log';
@@ -10,66 +8,66 @@ var SCRIPT = '/data/adb/modules/devicehub-remover/bin/dh-clean.sh';
 var STAGES = [
   {
     id: 1, name: '环境自检',
-    short: '权限、系统、目标应用、日志目录',
-    why: '先确认这个脚本真的拿到了 root 权限，并且知道目标应用现在在不在。没有最高权限的话，后面的删除动作要么失败、要么删错东西，所以这一步不通过就直接中止。',
-    what: '检查当前 uid 是否为 0；识别是 KernelSU / Magisk / APatch 中的哪一个；用 pm list packages 查目标包名是否存在；确认日志目录能写。',
-    read: '结论写「已获得最高权限」说明环境正常。如果这里就失败了，检查模块是否真的被 root 管理器启用，然后在管理器里刷新一次。'
+    short: 'root / 系统 / 目标 / 日志目录',
+    why: '无 root 时删除会失败或误删，自检不过即中止。',
+    what: '查 uid 是否为 0；识别 KernelSU / Magisk / APatch；pm list packages 查包名；测日志目录可写。',
+    read: '「已获得最高权限」为正常，否则查模块启用状态。'
   },
   {
     id: 2, name: '停止运行中的应用',
-    short: '让它别再偷偷写文件',
-    why: '目标应用如果还在跑，你刚删掉的文件它可能立刻重建，卸载也可能因为进程占用而失败，所以先把它按停。',
-    what: '用 am force-stop 停止应用，有 killall 的话再补一刀，一秒后复查进程是否还活着。',
-    read: '结论说「已不再运行」就是停干净了。如果显示「又被拉起来了」，说明后台还有守护进程在拉活，下一步会处理。'
+    short: '先停进程，避免回写',
+    why: '进程存活会立刻重建文件，也会占用卸载。',
+    what: 'am force-stop；有 killall 再补一次；1 秒后复查进程。',
+    read: '「已不再运行」通过；「又被拉起」见第 3 阶段。'
   },
   {
     id: 3, name: '结束常驻守护进程',
-    short: '扫描 /proc 找 devicehub 进程',
-    why: 'DeviceHub 这类远端控制组件一般有一个 devicehub-device 加一个 devicehub-watchdog，互相拉活。只停应用停不掉它们，必须按进程名扫出来结束。',
-    what: '遍历 /proc 下所有进程的 cmdline，匹配名字里带 devicehub-device、devicehub-watchdog、devicehub-agent 的，逐个 kill -9，然后统计还剩几个。',
-    read: '计数是「结束的进程数」。显示「没有发现守护进程」说明本来干净；显示仍有剩余，通常是别的自启脚本在拉起来，看第 6 阶段的结果。'
+    short: '扫 /proc 按名匹配',
+    why: 'devicehub-device 与 devicehub-watchdog 互拉，停应用无效。',
+    what: '遍历 /proc/*/cmdline，匹配 devicehub-device、devicehub-watchdog、devicehub-agent，kill -9，统计剩余。',
+    read: '计数为结束数；仍有残留多为自启拉起，见 S6。'
   },
   {
     id: 4, name: '卸载目标应用',
-    short: 'pm uninstall 并解除保护',
-    why: '应用本体不卸载，残留文件删了也会被重新生成。',
-    what: '对当前用户执行 pm uninstall --user 0；如果没成功就再试一次 pm clear 加卸载；最后复查应用列表。',
-    read: '成功会写「已把 … 从当前用户下卸载」。失败最常见的原因是它启用了「设备管理器」或「无障碍」权限——到系统设置里取消授权后再跑一次就能过。'
+    short: 'pm uninstall + 解保护',
+    why: '不卸载，删掉的残留会被重新生成。',
+    what: 'pm uninstall --user 0；失败则 pm clear 后重试；复查包列表。',
+    read: '失败多为设备管理器 / 无障碍授权，撤销后重跑。'
   },
   {
     id: 5, name: '清理系统残留',
-    short: '/data/system 与临时文件',
-    why: '真正危险的东西在这里：/data/system/devicehub 是它的脚本仓库，.devicehub-bootstrap 是开机引导脚本，/data/local/tmp/.dh-fetch 是下载下来的临时载荷。',
-    what: '逐个检查并删除 /data/system/devicehub、/data/system/.devicehub-bootstrap-*.sh、/data/local/tmp/.dh-fetch.*、/data/local/tmp/devicehub*，删除前先备份到隔离目录。',
-    read: '「清掉了 N 处系统残留」后面会列出具体文件名。如果写「删除失败（可能被系统保护）」，重启后再跑一次通常就好了。'
+    short: '/data/system 与 tmp',
+    why: '/data/system/devicehub 为脚本仓库，.devicehub-bootstrap 为引导脚本，/data/local/tmp/.dh-fetch 为临时载荷。',
+    what: '处理 /data/system/devicehub、/data/system/.devicehub-bootstrap-*.sh、/data/local/tmp/.dh-fetch.*、/data/local/tmp/devicehub*，删前先备份到隔离目录。',
+    read: '「删除失败（可能被系统保护）」重启后重跑。'
   },
   {
     id: 6, name: '清理开机自启',
-    short: 'service.d / post-fs-data.d / 其他模块',
-    why: '这一层是「复活」的根源：只要开机脚本还在，重启一次 DeviceHub 就整套回来了，删掉的应用也会被静默装回来。',
-    what: '检查 /data/adb/service.d 和 /data/adb/post-fs-data.d 里的每个 .sh，以及其他模块自带的 service.sh、post-fs-data.sh，用关键字（devicehub、cxx.360nb.top、DH_BOOT_URL）判断是否属于它，命中就先备份再删除。',
-    read: '「所有开机启动目录里都没有发现…」是最理想的结果。本模块自己会被跳过，不会被误删。'
+    short: 'service.d / 模块脚本',
+    why: '开机脚本在，重启即整套复活并静默重装。',
+    what: '扫 /data/adb/service.d、/data/adb/post-fs-data.d 下 .sh 及各模块 service.sh、post-fs-data.sh，按 devicehub、cxx.360nb.top、DH_BOOT_URL 匹配，命中先备份再删。',
+    read: '本模块自身跳过；「都没有发现」为最佳结果。'
   },
   {
     id: 7, name: '清理手机存储脚本',
-    short: '下载、文档里的投放脚本',
-    why: '很多这类组件会把 .sh 投放脚本放在 /sdcard 上，靠短信或网页触发执行，所以存储里也要扫一遍。',
-    what: '在 /sdcard 下（最多 6 层，跳过 Android 目录）找出所有 .sh 文件，逐个用关键字过滤，命中就备份后删除。',
-    read: '这一步只处理同时命中关键字的脚本，正常的用户脚本不会被动。如果误报了某个自己写的脚本，到隔离目录把备份拿回来即可。'
+    short: '/sdcard 投放脚本',
+    why: '投放脚本常落在 /sdcard，靠短信或网页触发。',
+    what: '/sdcard 深 6 层、跳过 Android 目录，.sh 按关键字筛，命中即备份并删。',
+    read: '仅删命中项；误删可从隔离目录取回。'
   },
   {
     id: 8, name: '复查与守护',
-    short: '再核一遍，可常驻盯着',
-    why: '前面删的东西有可能被某个还没死透的进程重建，所以要用一次独立的复查来确认，而不是相信前面的结论。',
-    what: '重新查应用列表、重新扫进程表、重新看系统残留目录。开了「常驻守护」的话，之后会按设定的间隔重复这一整套动作，直到你在界面里点停止。',
-    read: '「复查通过」说明三样都干净了。显示「没完全通过」就把上面几个阶段的结论一起看，通常是第 4 阶段卸载没成功。'
+    short: '独立复核 + 可选常驻',
+    why: '已删对象可能被未死进程重建，需独立复核。',
+    what: '复查包列表 / 进程表 / 残留目录；常驻则按间隔循环，直至停止。',
+    read: '「复查通过」为干净；否则多为第 4 阶段卸载未成功。'
   },
   {
     id: 9, name: '生成日志总结',
-    short: '写成人话的输出文件',
-    why: '给后来的人（或者未来的你）看的东西不能只有命令行输出，得有一份能直接读懂的记录。',
-    what: '把每个阶段做了什么、发现了什么、需要留意什么，写成一段连续的中文说明，保存为日志目录里的「最近一次清理摘要.txt」，完整过程记录在同目录的时间戳日志里。',
-    read: '结论里会给出这两个文件的绝对路径，点右上「日志文件」可以直接看全文。'
+    short: '输出摘要文件',
+    why: '命令行输出不便阅读，需一份可直读的记录。',
+    what: '结论汇总进「最近一次清理摘要.txt」；过程见同目录时间戳日志。',
+    read: '结论含两个文件路径，右上「日志文件」看全文。'
   }
 ];
 
@@ -168,11 +166,11 @@ function buildStages() {
         '<div class="tag">未开始</div>' +
       '</div>' +
       '<div class="stage-body">' +
-        '<h4>为什么要有这一步</h4><p>' + s.why + '</p>' +
-        '<h4>这一步具体做什么</h4><p>' + s.what + '</p>' +
-        '<h4>本次情况</h4><div class="note" data-role="note">还没有运行记录。</div>' +
-        '<h4>结果怎么读</h4><p>' + s.read + '</p>' +
-        '<h4>相关日志</h4><ul class="stage-logs" data-role="logs"><li>暂无</li></ul>' +
+        '<h4>目的</h4><p>' + s.why + '</p>' +
+        '<h4>动作</h4><p>' + s.what + '</p>' +
+        '<h4>现状</h4><div class="note" data-role="note">暂无记录。</div>' +
+        '<h4>判读</h4><p>' + s.read + '</p>' +
+        '<h4>日志</h4><ul class="stage-logs" data-role="logs"><li>—</li></ul>' +
       '</div>';
     el.querySelector('.stage-head').addEventListener('click', function () {
       var open = el.dataset.open === '1';
@@ -197,9 +195,9 @@ function renderStages(st, logLines) {
     el.querySelector('.tag').textContent = STATUS_TEXT[status] || status;
 
     var noteEl = el.querySelector('[data-role=note]');
-    var txt = note || '还没有运行记录。';
+    var txt = note || '暂无记录。';
     if (parseInt(found, 10) > 0) {
-      txt += '（发现 ' + found + ' 项，处理 ' + removed + ' 项）';
+      txt += '（发现 ' + found + ' / 处理 ' + removed + '）';
     }
     noteEl.textContent = txt;
 
@@ -210,7 +208,7 @@ function renderStages(st, logLines) {
         return '<li>' + l.t + '  ' + escapeHtml(l.m) + '</li>';
       }).join('');
     } else {
-      ul.innerHTML = '<li>暂无</li>';
+      ul.innerHTML = '<li>—</li>';
     }
   }
 }
@@ -222,10 +220,7 @@ function escapeHtml(s) {
 }
 
 /* ---------------- 渲染状态 ---------------- */
-var MODE_TEXT = {
-  webui: '在 WebUI 里手动触发', boot: '开机自动执行',
-  action: '模块操作按钮触发', once: '手动执行'
-};
+var MODE_TEXT = { webui: 'WebUI 手动', boot: '开机自动', action: '模块按钮', once: '手动' };
 
 function applyState(st, logLines) {
   ST = st || {};
@@ -245,12 +240,12 @@ function applyState(st, logLines) {
   $('barFill').style.width = Math.max(0, Math.min(100, pct)) + '%';
 
   $('modeLine').textContent = ST.run_id
-    ? ('本次运行：' + (MODE_TEXT[ST.mode] || ST.mode || '未知') + '（' + ST.run_id + '）')
-    : '还没有运行记录';
+    ? ('本次：' + (MODE_TEXT[ST.mode] || ST.mode || '未知') + ' · ' + ST.run_id)
+    : '无运行记录';
 
   $('stageLine').textContent = ST.stage
     ? ('第 ' + ST.stage + ' / ' + (ST.stage_total || 9) + ' 阶段 · ' + (ST.stage_name || '') + ' · ' + pct + '%')
-    : '尚未开始';
+    : '未开始';
 
   $('timeLine').textContent = ST.elapsed ? ('已用 ' + fmtDur(ST.elapsed)) : '—';
   $('msgLine').textContent = ST.message || '';
@@ -259,14 +254,14 @@ function applyState(st, logLines) {
   var sum = $('summaryText');
   var chips = $('chips');
   if (!ST.run_id) {
-    sum.textContent = '还没有运行记录，点「开始清理」执行一次。';
+    sum.textContent = '无运行记录。';
     chips.innerHTML = '';
   } else {
     var parts = [];
-    if (status === 'done') parts.push('这次清理已经跑完全部 9 个阶段。');
-    else if (status === 'watching') parts.push('清理已完成，现在在按间隔持续复查。');
-    else if (status === 'failed') parts.push('清理中途中止了，看下面标注「未成功」的阶段。');
-    else parts.push('正在执行第 ' + ST.stage + ' 阶段：' + (ST.stage_name || '') + '。');
+    if (status === 'done') parts.push('9 个阶段已走完。');
+    else if (status === 'watching') parts.push('清理完成，正在按间隔复查。');
+    else if (status === 'failed') parts.push('流程中止，见标注「未成功」的阶段。');
+    else parts.push('执行中：第 ' + ST.stage + ' 阶段 ' + (ST.stage_name || ''));
 
     var tries = 0, oks = 0;
     for (var i = 1; i <= 9; i++) {
@@ -274,8 +269,8 @@ function applyState(st, logLines) {
       if (s && s !== 'pending' && s !== 'running') tries++;
       if (s === 'ok') oks++;
     }
-    if (tries) parts.push('已经得出结论的阶段 ' + tries + ' 个，其中顺利完成 ' + oks + ' 个。');
-    if (ST.report_only === '1') parts.push('当前是「只报告不删除」模式，不会真的删除文件。');
+    if (tries) parts.push('已出结论 ' + tries + ' 个 / 通过 ' + oks + ' 个。');
+    if (ST.report_only === '1') parts.push('report-only，不落地删除。');
     sum.textContent = parts.join('');
 
     var found = 0, removed = 0;
@@ -284,10 +279,10 @@ function applyState(st, logLines) {
       removed += parseInt(ST['s' + j + '_removed'] || '0', 10) || 0;
     }
     chips.innerHTML =
-      '<span class="chip">目标应用 <b>' + escapeHtml(ST.target || 'com.devicehub.agent') + '</b></span>' +
-      '<span class="chip">发现痕迹 <b>' + found + '</b> 处</span>' +
-      '<span class="chip">已处理 <b>' + removed + '</b> 处</span>' +
-      '<span class="chip">日志目录 <b>' + escapeHtml(shortPath(ST.log_file)) + '</b></span>';
+      '<span class="chip">目标 <b>' + escapeHtml(ST.target || 'com.devicehub.agent') + '</b></span>' +
+      '<span class="chip">发现 <b>' + found + '</b></span>' +
+      '<span class="chip">处理 <b>' + removed + '</b></span>' +
+      '<span class="chip">日志 <b>' + escapeHtml(shortPath(ST.log_file)) + '</b></span>';
   }
 
   renderStages(ST, logLines);
@@ -302,7 +297,7 @@ function shortPath(p) {
 function renderLog(lines) {
   var box = $('logBox');
   if (!lines || !lines.length) {
-    box.innerHTML = '<div class="logline muted">等待日志…</div>';
+    box.innerHTML = '<div class="logline muted">无日志</div>';
     return;
   }
   var atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
@@ -368,7 +363,7 @@ function runClean() {
   $('btnRun').disabled = true;
   kexec('rm -f ' + BASE + '/stop.flag; (sh ' + SCRIPT + ' --mode=webui >/dev/null 2>&1 &); echo started')
     .then(function () {
-      toast('已开始清理');
+      toast('已启动');
       setTimeout(function () { $('btnRun').disabled = false; }, 2500);
       startPolling();
       setTimeout(poll, 350);
@@ -377,26 +372,26 @@ function runClean() {
 
 function stopWatch() {
   kexec('mkdir -p ' + BASE + '; echo stop > ' + BASE + '/stop.flag; echo ok')
-    .then(function () { toast('已请求停止守护'); setTimeout(poll, 500); });
+    .then(function () { toast('已发送停止'); setTimeout(poll, 500); });
 }
 
 /* ---------------- 日志面板 ---------------- */
 function openLog() {
   if (!hasRoot()) { toast('需要在 KernelSU WebUI 中查看'); return; }
   var path = ST.log_file || '';
-  $('logPath').textContent = path || '(还没有生成日志)';
+  $('logPath').textContent = path || '(无日志)';
   $('logFull').textContent = '读取中…';
   show($('logSheet'));
-  if (!path) { $('logFull').textContent = '还没有日志文件，先执行一次清理。'; return; }
-  kexec('ls -l "' + path + '" >/dev/null 2>&1 && tail -n 400 "' + path + '" || echo "文件不存在：' + path + '"')
+  if (!path) { $('logFull').textContent = '无日志文件，先跑一次。'; return; }
+  kexec('ls -l "' + path + '" >/dev/null 2>&1 && tail -n 400 "' + path + '" || echo "不存在：' + path + '"')
     .then(function (t) { $('logFull').textContent = t || '(空)'; });
 }
 
 function copyPath() {
   var p = ST.log_file || '';
-  if (!p) { toast('还没有日志文件'); return; }
+  if (!p) { toast('无日志文件'); return; }
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(p).then(function () { toast('路径已复制'); },
+    navigator.clipboard.writeText(p).then(function () { toast('已复制'); },
       function () { toast(p); });
   } else { toast(p); }
 }
@@ -441,7 +436,7 @@ function saveConfig() {
     content + 'DHEOF\necho saved';
   kexec(cmd).then(function (r) {
     if (r && r.indexOf('saved') >= 0) {
-      toast('设置已保存');
+      toast('已保存');
       hide($('cfgSheet'));
       poll();
     } else {

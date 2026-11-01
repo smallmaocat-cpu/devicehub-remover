@@ -18,8 +18,8 @@ android {
         applicationId 'io.github.smallmaocat.devicehubcleaner'
         minSdk 24
         targetSdk 34
-        versionCode 4
-        versionName '1.0.3'
+        versionCode 5
+        versionName '1.0.4'
     }
     signingConfigs {
         if (hasFixedKs) {
@@ -33,8 +33,11 @@ android {
     }
     buildTypes {
         release {
-            minifyEnabled false
-            shrinkResources false
+            /* R8 混淆：重命名类/字段/方法、删除未引用代码、内联；资源名同步收缩。
+             * 保留规则见 app/proguard-rules.pro（JS 桥方法必须保名）。 */
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig hasFixedKs ? signingConfigs.release : signingConfigs.debug
         }
     }

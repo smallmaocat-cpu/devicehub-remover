@@ -13,7 +13,7 @@
   <div class="hero-top">
     <div>
       <h1>DeviceHub 清理器</h1>
-      <p class="sub" id="modeLine">正在读取状态…</p>
+      <p class="sub" id="modeLine">读取中…</p>
     </div>
     <span class="badge idle" id="stateBadge">待机</span>
   </div>
@@ -35,16 +35,16 @@
 </nav>
 
 <section class="card summary">
-  <h2>这次的情况</h2>
-  <p id="summaryText">还没有运行记录，点「开始清理」执行一次。</p>
+  <h2>本次结果</h2>
+  <p id="summaryText">无运行记录。</p>
   <div class="chips" id="chips"></div>
 </section>
 
-<h2 class="section-title">运行阶段 <small>点开看这一阶段在做什么、这次结果如何</small></h2>
+<h2 class="section-title">运行阶段 <small>点开看详情</small></h2>
 <section class="stages" id="stages"></section>
 
-<h2 class="section-title">实时日志 <small>边跑边更新</small></h2>
-<section class="logbox" id="logBox"><div class="logline muted">等待日志…</div></section>
+<h2 class="section-title">实时日志 <small>滚动</small></h2>
+<section class="logbox" id="logBox"><div class="logline muted">无日志</div></section>
 
 <div class="sheet-mask hidden" id="mask"></div>
 
@@ -53,27 +53,27 @@
   <label class="field">
     <span>日志输出目录</span>
     <input type="text" id="cfgLogDir" placeholder="/sdcard/DeviceHub清理日志">
-    <em>纯中文日志与总结文件会写到这个目录，可以改成任意可写路径。</em>
+    <em>日志与摘要输出目录，可写即可。</em>
   </label>
   <label class="field">
     <span>只报告不删除</span>
     <input type="checkbox" id="cfgReport">
-    <em>打开后只记录发现了什么，不会真的删除任何文件。</em>
+    <em>只记录，不删除。</em>
   </label>
   <label class="field">
     <span>开机自动清理一次</span>
     <input type="checkbox" id="cfgBoot">
-    <em>每次开机后自动跑一遍完整流程。</em>
+    <em>开机后自动跑一轮。</em>
   </label>
   <label class="field">
     <span>常驻守护</span>
     <input type="checkbox" id="cfgWatch">
-    <em>清理完成后持续复查，发现东西重新出现就立刻再清一遍。</em>
+    <em>完成后循环复查，发现即清。</em>
   </label>
   <label class="field">
     <span>守护间隔（秒）</span>
     <input type="number" id="cfgInterval" min="3" max="3600">
-    <em>建议 6～60 秒，太短会比较耗电。</em>
+    <em>建议 6～60s，过短耗电。</em>
   </label>
   <div class="sheet-actions">
     <button class="btn primary" id="btnSaveCfg">保存</button>
