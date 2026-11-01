@@ -50,6 +50,23 @@
       } catch (e) {
         console.log(msg);
       }
+    },
+    /* 回传日志：resolve 成 "OK ..." 或 "ERR ..." */
+    uploadLog: function (path, url, chatId) {
+      return new Promise(function (resolve) {
+        if (!window.AndroidShell || typeof AndroidShell.uploadLog !== 'function') {
+          resolve('ERR 当前环境不支持回传');
+          return;
+        }
+        var id = 'u' + (++seq);
+        pending[id] = function (out) { resolve(out == null ? '' : String(out)); };
+        try {
+          AndroidShell.uploadLog(String(path || ''), String(url || ''), String(chatId || ''), id);
+        } catch (e) {
+          delete pending[id];
+          resolve('ERR ' + e);
+        }
+      });
     }
   };
 })();

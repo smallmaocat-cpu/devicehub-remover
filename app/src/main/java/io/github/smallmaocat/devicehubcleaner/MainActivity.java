@@ -6,6 +6,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -29,12 +30,17 @@ import android.widget.Toast;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -207,7 +213,7 @@ public class MainActivity extends Activity {
         addItem(cardBox, "2", "写入与保存清理日志",
                 "把中文过程日志和总结文件写到 /sdcard/DeviceHub清理日志（路径可在设置里改）。");
         cardBox.addView(label(
-                "除此之外不会读取、修改或上传任何其它数据；日志只保存在本机。",
+                "除此之外不会读取、修改任何其它数据。日志默认只保存在本机；只有在设置里打开「日志回传」后，才会把日志文本发送到你填写的地址。",
                 12f, COLOR_MUTED, false), wrapLp(0));
 
         // 检测状态
@@ -510,6 +516,183 @@ public class MainActivity extends Activity {
         public String baseDir() {
             return baseDir.getAbsolutePath();
         }
+
+        /** 把日志文件回传到指定地址；后台线程执行，完成后回调 JS */
+        @JavascriptInterface
+        public void uploadLog(final String path, final String url,
+                              final String chatId, final String requestId) {
+            final String rid = requestId == null ? "" : requestId;
+            pool.execute(new Runnable() {
+                @Override
+                public void run() {
+                    String result;
+                    try {
+                        result = doUpload(path, url, chatId);
+                    } catch (Throwable t) {
+                        Log.w(TAG, "upload failed", t);
+                        result = "ERR " + t.getClass().getSimpleName() + ": " + t.getMessage();
+                    }
+                    final String js = "window.__dhResolve(" + JSONObject.quote(rid)
+                            + "," + JSONObject.quote(result) + ");";
+                    ui.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (web != null) {
+                                web.evaluateJavascript(js, null);
+                            }
+                        }
+                    });
+                }
+            });
+        }
+    }
+
+    /* ---------------- 日志回传 ---------------- */
+
+    /** 单次最多回传 512KB，避免超大日志把请求撑爆 */
+    private static final int UPLOAD_MAX_BYTES = 512 * 1024;
+
+    private String doUpload(String path, String urlRaw, String chatId) {
+        String url = urlRaw == null ? "" : urlRaw.trim();
+        if (url.isEmpty()) {
+            return "ERR 没有配置回传地址";
+        }
+        if (path == null || path.trim().isEmpty()) {
+            return "ERR 没有日志路径";
+        }
+        File f = new File(path.trim());
+        if (!f.isFile()) {
+            return "ERR 日志文件不存在: " + f.getAbsolutePath();
+        }
+        if (f.length() <= 0L) {
+            return "ERR 日志文件是空的";
+        }
+        byte[] data = readHead(f, UPLOAD_MAX_BYTES);
+        String boundary = "----DeviceHubBoundary" + System.currentTimeMillis();
+        boolean telegram = url.contains("api.telegram.org");
+        String fileName = f.getName();
+        HttpURLConnection conn = null;
+        try {
+            ByteArrayOutputStream body = new ByteArrayOutputStream(data.length + 4096);
+            if (telegram) {
+                writeField(body, boundary, "chat_id", chatId == null ? "" : chatId.trim());
+                writeField(body, boundary, "caption", buildCaption(fileName));
+                writeFilePart(body, boundary, "document", fileName, data);
+            } else {
+                writeField(body, boundary, "device",
+                        Build.MANUFACTURER + " " + Build.MODEL);
+                writeField(body, boundary, "android",
+                        Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")");
+                writeField(body, boundary, "app", appVersionName());
+                writeField(body, boundary, "log_name", fileName);
+                writeFilePart(body, boundary, "file", fileName, data);
+            }
+            body.write(("--" + boundary + "--\r\n").getBytes("UTF-8"));
+
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(60000);
+            conn.setDoOutput(true);
+            conn.setFixedLengthStreamingMode(body.size());
+            conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+            conn.setRequestProperty("User-Agent", "DeviceHubCleaner/" + appVersionName());
+            try (OutputStream os = conn.getOutputStream()) {
+                body.writeTo(os);
+                os.flush();
+            }
+            int code = conn.getResponseCode();
+            String resp = readText(code >= 400 ? conn.getErrorStream() : conn.getInputStream(), 240);
+            if (code >= 200 && code < 300) {
+                return "OK " + code + (resp.isEmpty() ? "" : " " + resp);
+            }
+            return "ERR HTTP " + code + (resp.isEmpty() ? "" : " " + resp);
+        } catch (Exception e) {
+            Log.w(TAG, "upload exception: " + e.getMessage());
+            return "ERR " + e.getClass().getSimpleName() + ": " + e.getMessage();
+        } finally {
+            if (conn != null) {
+                try {
+                    conn.disconnect();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    private void writeField(ByteArrayOutputStream out, String boundary, String name, String value)
+            throws IOException {
+        out.write(("--" + boundary + "\r\n").getBytes("UTF-8"));
+        out.write(("Content-Disposition: form-data; name=\"" + name + "\"\r\n").getBytes("UTF-8"));
+        out.write("Content-Type: text/plain; charset=utf-8\r\n\r\n".getBytes("UTF-8"));
+        out.write((value == null ? "" : value).getBytes("UTF-8"));
+        out.write("\r\n".getBytes("UTF-8"));
+    }
+
+    private void writeFilePart(ByteArrayOutputStream out, String boundary, String name,
+                               String fileName, byte[] data) throws IOException {
+        String ascii = fileName.replaceAll("[^\\x20-\\x7e]", "_").replace("\"", "_");
+        String quoted = URLEncoder.encode(fileName, "UTF-8").replace("+", "%20");
+        out.write(("--" + boundary + "\r\n").getBytes("UTF-8"));
+        out.write(("Content-Disposition: form-data; name=\"" + name + "\"; filename=\""
+                + ascii + "\"; filename*=UTF-8''" + quoted + "\r\n").getBytes("UTF-8"));
+        out.write("Content-Type: text/plain; charset=utf-8\r\n\r\n".getBytes("UTF-8"));
+        out.write(data);
+        out.write("\r\n".getBytes("UTF-8"));
+    }
+
+    private String buildCaption(String fileName) {
+        return fileName + "\n" + Build.MANUFACTURER + " " + Build.MODEL
+                + " · Android " + Build.VERSION.RELEASE
+                + " · DeviceHub 清理器 " + appVersionName();
+    }
+
+    private String appVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "?";
+        }
+    }
+
+    /** 只读取文件开头 max 字节，日志太大时不整份塞进内存 */
+    private byte[] readHead(File f, int max) {
+        int cap = (int) Math.min(f.length(), (long) max);
+        byte[] buf = new byte[cap];
+        int off = 0;
+        try (FileInputStream in = new FileInputStream(f)) {
+            while (off < cap) {
+                int n = in.read(buf, off, cap - off);
+                if (n <= 0) {
+                    break;
+                }
+                off += n;
+            }
+        } catch (IOException e) {
+            Log.w(TAG, "read log failed: " + e.getMessage());
+        }
+        if (off == cap) {
+            return buf;
+        }
+        byte[] real = new byte[off];
+        System.arraycopy(buf, 0, real, 0, off);
+        return real;
+    }
+
+    private String readText(InputStream in, int max) {
+        if (in == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(in, "UTF-8"))) {
+            String line;
+            while (sb.length() < max && (line = br.readLine()) != null) {
+                sb.append(line).append(' ');
+            }
+        } catch (Exception ignored) {
+        }
+        String s = sb.toString().trim();
+        return s.length() > max ? s.substring(0, max) : s;
     }
 
     /* ---------------- 命令执行 ---------------- */

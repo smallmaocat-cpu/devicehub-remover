@@ -1,6 +1,6 @@
 id=devicehub-remover
 name=DeviceHub 清理器
-version=v1.0.0
-versionCode=1
+version=v1.0.3
+versionCode=3
 author=md3agent
 description=分阶段清除 com.devicehub.agent 及其常驻守护进程、开机自启脚本与系统残留目录。带 WebUI：实时阶段进度、每个阶段的说明与本次执行结论，并按自定义目录输出纯中文自然语言日志。开机自动复查可通过配置开关。

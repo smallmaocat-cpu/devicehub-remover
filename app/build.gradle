@@ -2,32 +2,46 @@ plugins {
     id 'com.android.application'
 }
 
+/* 固定签名。
+ * 为什么需要：默认的 debug keystore 是每次构建临时生成的，v1.0.1 / v1.0.2 / v1.0.3
+ * 三个版本的签名互不相同，安卓会认为它们是不同的应用，用户每次升级都必须先卸载，
+ * 而卸载会丢掉设置和之前的日志。
+ * 做法：CI 从 Secret 里解出一份固定 keystore，用 KEYSTORE_PATH 传进来；本地没配这些
+ * 环境变量时自动退回 debug 签名，保证「什么都不配也能编出能装的包」。 */
+def ksPath = System.getenv('KEYSTORE_PATH')
+def hasFixedKs = ksPath != null && new File(ksPath).isFile()
+
 android {
     namespace 'io.github.smallmaocat.devicehubcleaner'
     compileSdk 34
-
     defaultConfig {
         applicationId 'io.github.smallmaocat.devicehubcleaner'
         minSdk 24
         targetSdk 34
-        versionCode 3
-        versionName '1.0.2'
+        versionCode 4
+        versionName '1.0.3'
     }
-
+    signingConfigs {
+        if (hasFixedKs) {
+            release {
+                storeFile file(ksPath)
+                storePassword System.getenv('KEYSTORE_PASSWORD')
+                keyAlias System.getenv('KEYSTORE_ALIAS')
+                keyPassword System.getenv('KEY_PASSWORD')
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
             shrinkResources false
-            // 用 debug keystore 签名，装上就能用；正式发布可换成自己的 keystore
-            signingConfig signingConfigs.debug
+            signingConfig hasFixedKs ? signingConfigs.release : signingConfigs.debug
         }
     }
-
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-
     lint {
         abortOnError false
         checkReleaseBuilds false

@@ -6,6 +6,9 @@ var STATE_FILE = '/data/data/io.github.smallmaocat.devicehubcleaner/files/dh/sta
 var LIVE_FILE = '/data/data/io.github.smallmaocat.devicehubcleaner/files/dh/live.log';
 var BASE = '/data/data/io.github.smallmaocat.devicehubcleaner/files/dh';
 var SCRIPT = '/data/data/io.github.smallmaocat.devicehubcleaner/files/dh/bin/dh-clean.sh';
+/* 配置缓存。轮询里要判断「要不要自动回传」，但 poll 每 900ms 只 cat 一次
+ * state.ini，不可能每次都再读一遍 config.conf，所以启动时读一次存这里。 */
+var CFG = {};
 
 var STAGES = [
   {
@@ -341,10 +344,37 @@ function poll() {
       var lines = parseLog(parts[1] || '');
       applyState(st, lines);
       if (st.status === 'done' || st.status === 'failed') {
+        maybeAutoUpload(st);
         // 结束后再多看两轮就停，避免一直占着 root 通道
         stopPollingSoon();
       }
     });
+}
+
+/* 自动回传。
+ * 只发「这一轮刚跑出来」的日志：lastUploadedLog 里存着已经处理过的路径，
+ * 结束后轮询还会空转两轮，没有这个判断就会把同一份日志连发三次。
+ * 应用启动时会先用 primeUpload() 读一次当前状态，所以「打开应用看到的是上次的旧
+ * 日志」这种情况不会触发发送，想补发就手动点「立即回传」。
+ */
+var lastUploadedLog = '';
+var primed = false;
+function maybeAutoUpload(st) {
+  var path = st.log_file || '';
+  if (!path) return;
+  if (!CFG.UPLOAD_URL || CFG.UPLOAD_AUTO !== '1') return;
+  if (!primed) return;
+  if (lastUploadedLog === path) return;
+  lastUploadedLog = path;
+  doUploadLog(path, true);
+}
+function primeUpload() {
+  if (!hasRoot()) return Promise.resolve();
+  return kexec('cat ' + STATE_FILE + ' 2>/dev/null').then(function (txt) {
+    var st = parseIni(txt || '');
+    lastUploadedLog = st.log_file || '';
+    primed = true;
+  }, function () { primed = true; });
 }
 
 var idleTicks = 0;
@@ -386,6 +416,7 @@ function openLog() {
   var path = ST.log_file || '';
   $('logPath').textContent = path || '(还没有生成日志)';
   $('logFull').textContent = '读取中…';
+  renderUploadState(CFG);
   show($('logSheet'));
   if (!path) { $('logFull').textContent = '还没有日志文件，先执行一次清理。'; return; }
   kexec('ls -l "' + path + '" >/dev/null 2>&1 && tail -n 400 "' + path + '" || echo "文件不存在：' + path + '"')
@@ -401,6 +432,52 @@ function copyPath() {
   } else { toast(p); }
 }
 
+/* ---------------- 日志回传 ---------------- */
+var uploading = false;
+/* auto=true 是清理跑完后自动触发的，不发 toast 打扰用户，只更新面板文字；
+ * 手动点按钮时才会有提示。真正干活的是 Java 侧的 uploadLog，这里只负责
+ * 传参、防并发、把结果翻译成人话。 */
+function doUploadLog(path, auto) {
+  var el = $('uploadState');
+  if (!hasRoot()) { if (!auto) toast('需要 root 权限'); return; }
+  if (!window.ksu || !ksu.uploadLog) { if (!auto) toast('当前环境不支持回传'); return; }
+  if (!CFG.UPLOAD_URL) {
+    if (el) el.textContent = '回传：还没填地址，先去设置里配置';
+    if (!auto) toast('还没填回传地址');
+    return;
+  }
+  if (!path) { if (!auto) toast('还没有日志文件'); return; }
+  if (uploading) { if (!auto) toast('上一次还在发，稍等一下'); return; }
+
+  uploading = true;
+  if (el) el.textContent = '回传：正在发送…';
+  if (!auto) toast('开始回传…');
+
+  ksu.uploadLog(path, CFG.UPLOAD_URL, CFG.UPLOAD_CHAT || '').then(function (r) {
+    uploading = false;
+    var s = String(r || '');
+    if (s.indexOf('OK') === 0) {
+      var code = s.replace(/[^0-9]/g, '') || '200';
+      if (el) el.textContent = '回传：已发送（HTTP ' + code + '）';
+      toast('日志已回传');
+    } else {
+      var msg = s.replace(/^ERR\s*/, '') || '未知错误';
+      if (el) el.textContent = '回传：失败（' + msg + '）';
+      toast('回传失败：' + msg);
+    }
+  }, function (e) {
+    uploading = false;
+    var msg = (e && e.message) ? e.message : String(e);
+    if (el) el.textContent = '回传：失败（' + msg + '）';
+    if (!auto) toast('回传失败：' + msg);
+  });
+}
+function uploadNow() {
+  var p = ST.log_file || '';
+  if (!p) { toast('还没有日志文件，先执行一次清理'); return; }
+  doUploadLog(p, false);
+}
+
 /* ---------------- 设置面板 ---------------- */
 function loadConfig() {
   if (!hasRoot()) {
@@ -409,12 +486,30 @@ function loadConfig() {
   }
   kexec('cat ' + BASE + '/config.conf 2>/dev/null').then(function (txt) {
     var c = parseIni(txt || '');
+    CFG = c;
     $('cfgLogDir').value = c.LOG_DIR || '/sdcard/DeviceHub清理日志';
     $('cfgReport').checked = c.REPORT_ONLY === '1';
     $('cfgBoot').checked = (c.AUTO_BOOT || '1') === '1';
     $('cfgWatch').checked = c.WATCH === '1';
     $('cfgInterval').value = c.WATCH_INTERVAL || 6;
+    $('cfgUploadUrl').value = c.UPLOAD_URL || '';
+    $('cfgUploadChat').value = c.UPLOAD_CHAT || '';
+    $('cfgUploadAuto').checked = c.UPLOAD_AUTO === '1';
+    renderUploadState(c);
   });
+}
+
+/* 日志面板底部那行小字：告诉用户现在到底会不会回传 */
+function renderUploadState(c) {
+  var el = $('uploadState');
+  if (!el) return;
+  if (!c || !c.UPLOAD_URL) {
+    el.textContent = '回传：未配置（在设置里填地址后才会启用）';
+  } else if (c.UPLOAD_AUTO === '1') {
+    el.textContent = '回传：已开启，每次清理跑完自动发送';
+  } else {
+    el.textContent = '回传：地址已配置，需要手动点「立即回传」';
+  }
 }
 
 function saveConfig() {
@@ -424,7 +519,13 @@ function saveConfig() {
   var watch = $('cfgWatch').checked ? '1' : '0';
   var interval = parseInt($('cfgInterval').value, 10);
   if (isNaN(interval) || interval < 3) interval = 6;
-
+  /* 回传地址里可能出现空格以外的奇怪字符，去掉首尾空白就行，不要做多余转义，
+     否则用户填一遍就得猜一遍自己哪里写错了。 */
+  var uploadUrl = ($('cfgUploadUrl').value || '').trim();
+  var uploadChat = ($('cfgUploadChat').value || '').trim();
+  var uploadAuto = $('cfgUploadAuto').checked ? '1' : '0';
+  /* 地址为空时自动回传没有意义，直接把开关按掉，免得配置文件里留下一个假开启状态 */
+  if (!uploadUrl) uploadAuto = '0';
   if (!hasRoot()) { toast('需要 root 权限才能保存'); return; }
 
   var content = [
@@ -434,6 +535,9 @@ function saveConfig() {
     'AUTO_BOOT=' + boot,
     'WATCH=' + watch,
     'WATCH_INTERVAL=' + interval,
+    'UPLOAD_URL=' + uploadUrl,
+    'UPLOAD_CHAT=' + uploadChat,
+    'UPLOAD_AUTO=' + uploadAuto,
     'PATTERN=devicehub|cxx\\.360nb\\.top|DH_BOOT_URL'
   ].join('\n') + '\n';
 
@@ -441,6 +545,11 @@ function saveConfig() {
     content + 'DHEOF\necho saved';
   kexec(cmd).then(function (r) {
     if (r && r.indexOf('saved') >= 0) {
+      /* 同步更新内存里的配置，否则刚打开自动回传、马上跑一次清理，
+       * 轮询读到的还是旧的 CFG，会漏发这一轮。 */
+      CFG.UPLOAD_URL = uploadUrl;
+      CFG.UPLOAD_CHAT = uploadChat;
+      CFG.UPLOAD_AUTO = uploadAuto;
       toast('设置已保存');
       hide($('cfgSheet'));
       poll();
@@ -466,10 +575,10 @@ document.addEventListener('DOMContentLoaded', function () {
   $('btnCloseCfg').addEventListener('click', function () { hide($('cfgSheet')); });
   $('btnCloseLog').addEventListener('click', function () { hide($('logSheet')); });
   $('btnCopyPath').addEventListener('click', copyPath);
+  $('btnUploadLog').addEventListener('click', uploadNow);
   $('mask').addEventListener('click', function () {
     hide($('cfgSheet')); hide($('logSheet'));
   });
-
   if (!hasRoot()) {
     $('modeLine').textContent = '预览模式：没有拿到 root 权限，按钮不会真的执行';
     $('msgLine').textContent = '要真正执行，请先授予本应用 root 权限，然后重新打开。';
@@ -477,7 +586,14 @@ document.addEventListener('DOMContentLoaded', function () {
     renderStages({}, []);
     return;
   }
-
+  /* 先把配置和「启动前就已经存在的日志」读进来，再开始轮询。
+   * 少这一步的话，打开应用时状态若还停在上一轮的 done，第一轮轮询就会把旧日志
+   * 当成「刚跑完」再发一遍。 */
+  kexec('cat ' + BASE + '/config.conf 2>/dev/null').then(function (t) {
+    CFG = parseIni(t || '');
+    renderUploadState(CFG);
+  }, function () { CFG = {}; })
+    .then(primeUpload, primeUpload);
   poll();
   startPolling();
   window.addEventListener('focus', poll);

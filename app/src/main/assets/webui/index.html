@@ -75,6 +75,21 @@
     <input type="number" id="cfgInterval" min="3" max="3600">
     <em>建议 6～60 秒，太短会比较耗电。</em>
   </label>
+  <label class="field">
+    <span>日志回传地址</span>
+    <input type="text" id="cfgUploadUrl" placeholder="https://你的接口地址">
+    <em>留空就不回传。任意能接收 POST 的地址都行（multipart/form-data，文件字段名 file）；如果填的是 Telegram Bot 的 sendDocument 地址，会自动按 Telegram 的格式发送。</em>
+  </label>
+  <label class="field">
+    <span>Telegram chat_id</span>
+    <input type="text" id="cfgUploadChat" placeholder="只在上面填 Telegram 接口时才需要">
+    <em>用 @userinfobot 查自己的 id；群组是负号开头的数字。</em>
+  </label>
+  <label class="field">
+    <span>自动回传</span>
+    <input type="checkbox" id="cfgUploadAuto">
+    <em>打开后，每次清理跑完会自动把这次的日志文件发到上面的地址。</em>
+  </label>
   <div class="sheet-actions">
     <button class="btn primary" id="btnSaveCfg">保存</button>
     <button class="btn" id="btnCloseCfg">关闭</button>
@@ -85,8 +100,10 @@
   <h2>日志文件</h2>
   <div class="pathbox" id="logPath">—</div>
   <pre class="logfull" id="logFull">读取中…</pre>
+  <div class="pathbox" id="uploadState">回传：未配置</div>
   <div class="sheet-actions">
     <button class="btn" id="btnCopyPath">复制路径</button>
+    <button class="btn primary" id="btnUploadLog">立即回传</button>
     <button class="btn" id="btnCloseLog">关闭</button>
   </div>
 </section>
