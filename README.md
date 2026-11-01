@@ -6,6 +6,7 @@
 - **执行**：`MainActivity` 内置 `su -c` 通道，调用 `assets/bin/dh-clean.sh`，不需要 root 管理器也能用（当然要 root 权限才删得动东西）。
 - **日志**：默认写到 `/sdcard/DeviceHub清理日志`，纯中文自然语言，可在 App 设置里改成任意可写目录。
 - **状态**：`state.ini` / `live.log` / `config.conf` 在 App 私有目录 `files/dh/` 下，通过 `DH_BASE`、`MODDIR` 环境变量传给脚本。
+- **首启引导页**：第一次打开不是直接进 WebUI，而是先弹原生权限说明页——写明 Root 只用于「扫描 DeviceHub 相关文件」和「写入并保存清理日志」，点「检测 Root 权限」才真正执行 `su`；检测结束后无论成功失败都倒计时 3 秒自动进入主界面（未授权进只读模式）。
 
 ## 目录
 
@@ -23,7 +24,7 @@ kernelsu-module/             同一份功能的 KernelSU / Magisk 模块源码
 
 1. 推送代码到 `main` 分支（或在 Actions 页面点 Run workflow）；
 2. 等 `Build APK` 跑完；
-3. 从 Releases 页下载 `DeviceHub-清理器-v1.0.0.apk`，或从 Actions 产物里下。
+3. 从 Releases 页下载 `DeviceHub-cleaner-v1.0.2.apk`，或从 Actions 产物里下。
 
 本地编译（有 JDK 17 + Android SDK 34 时）：
 
@@ -35,5 +36,5 @@ gradle assembleRelease
 ## 说明
 
 - APK 用 debug keystore 签名，可以直接安装；要上架或长期分发请换自己的签名。
-- 第一次运行时系统会弹 root 授权（Magisk / KernelSU / APatch 都会弹），允许后界面才能执行操作；拒绝授权则界面进入预览模式。
+- 第一次启动会先显示权限说明页，点「检测 Root 权限」后由 Magisk / KernelSU / APatch 弹出授权窗口；允许后界面才能执行操作，拒绝则 3 秒后进入只读预览模式。
 - 脚本默认对 `com.devicehub.agent` 动手，删除前都会先备份到 `files/dh/quarantine/`。

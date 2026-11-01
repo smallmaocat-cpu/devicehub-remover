@@ -33,7 +33,7 @@ jobs:
         run: |
           mkdir -p dist
           # 用纯 ASCII 文件名：中文名在上传 release 资产时会被规范化成 ".-"，看着像乱码
-          cp app/build/outputs/apk/release/app-release.apk dist/DeviceHub-cleaner-v1.0.1.apk
+          cp app/build/outputs/apk/release/app-release.apk dist/DeviceHub-cleaner-v1.0.2.apk
           ls -l dist
 
       - name: Upload artifact
@@ -45,18 +45,21 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.1
-          name: DeviceHub 清理器 v1.0.1
+          tag_name: v1.0.2
+          name: DeviceHub 清理器 v1.0.2
           body: |
             由 GitHub Actions 自动编译的 APK。
 
-            本版修复：
-            - release 资产文件名改为纯 ASCII（上版中文名被吞成 `DeviceHub-.-v1.0.0.apk`）
-            - 补上应用图标：自适应图标（Android 8+）+ 矢量回退（Android 7.x），不再是默认绿机器人
+            本版新增（首次启动引导页）：
+            - 启动后第一个页面不再直接进 WebUI，而是原生权限说明页
+            - 明确告知：Root 仅用于「扫描 DeviceHub 相关文件」与「写入并保存清理日志」两件事，其它数据不读不改不上传
+            - 页面上有「检测 Root 权限」按钮，点击才真正执行 su，触发 root 管理器授权弹窗
+            - 无论授权成功或失败，检测结束后都会显示 3 秒倒计时，然后自动进入主界面；未授权也能进主界面，只是清理功能只读
+            - WebView 延迟到检测结束后才加载，避免授权前 isRoot() 判定为 false 导致界面永久停在预览模式
 
             功能：
             - 界面：沿用 KernelSU WebUI 的 9 阶段进度界面，每个阶段可展开看说明与本次结论
             - 执行：通过 su -c 运行 assets/bin/dh-clean.sh
             - 日志：默认写到 /sdcard/DeviceHub清理日志，可在设置里改
-          files: dist/DeviceHub-cleaner-v1.0.1.apk
+          files: dist/DeviceHub-cleaner-v1.0.2.apk
           fail_on_unmatched_files: true

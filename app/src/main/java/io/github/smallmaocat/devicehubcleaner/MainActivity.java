@@ -2,10 +2,17 @@ package io.github.smallmaocat.devicehubcleaner;
 
 import android.app.Activity;
 import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
@@ -13,6 +20,10 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import org.json.JSONObject;
@@ -26,21 +37,56 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * DeviceHub 清理器 · APK 外壳
- * WebView 载入 assets/webui 里的界面，通过 su -c 执行 assets/bin/dh-clean.sh。
+ *
+ * 启动流程：
+ *   1. 先显示原生「权限说明」引导页，说明 Root 只用于扫描 DeviceHub 与保存日志；
+ *   2. 用户点「检测 Root 权限」→ 触发 root 管理器授权弹窗，实时反馈结果；
+ *   3. 无论授权成功与否，3 秒后自动进入 WebView 主界面。
+ *
+ * 注意：WebView 必须等引导页检测完再 loadUrl。因为 assets/webui/bridge.js 在页面加载时会
+ * 同步调用 AndroidShell.isRoot()，如果提前加载且当时还没授权，界面会永久停在「预览模式」。
+ *
  * 运行状态、配置、日志都在 files/dh 下，通过 DH_BASE / MODDIR 环境变量传给脚本。
  */
 public class MainActivity extends Activity {
 
     private static final String TAG = "DHCleaner";
     private static final String SCRIPT_ASSET = "bin/dh-clean.sh";
+    private static final String WEB_URL = "file:///android_asset/webui/index.html";
+
+    /** 检测结束后固定 3 秒自动进入主界面 */
+    private static final int AUTO_ENTER_SECONDS = 3;
+    /** 等用户在 root 管理器弹窗里点「允许」的最长时间 */
+    private static final long ROOT_PROMPT_TIMEOUT_MS = 60000L;
+
+    private static final int COLOR_BG = Color.parseColor("#0e1116");
+    private static final int COLOR_CARD = Color.parseColor("#181e27");
+    private static final int COLOR_LINE = Color.parseColor("#242c38");
+    private static final int COLOR_FG = Color.parseColor("#e8edf4");
+    private static final int COLOR_MUTED = Color.parseColor("#8b97a8");
+    private static final int COLOR_ACCENT = Color.parseColor("#39d98a");
+    private static final int COLOR_ACCENT_DIM = Color.parseColor("#1f5c41");
+    private static final int COLOR_WARN = Color.parseColor("#f5b83d");
+    private static final int COLOR_ON_ACCENT = Color.parseColor("#06120c");
+    private static final int COLOR_BTN_OFF = Color.parseColor("#2a3340");
 
     private WebView web;
+    private View guideView;
+    private View mainView;
+    private TextView guideStatus;
+    private TextView guideBtn;
+    private TextView guideHint;
+
     private File baseDir;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService pool = Executors.newSingleThreadExecutor();
+
+    private boolean checking = false;
+    private boolean mainEntered = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -53,14 +99,33 @@ public class MainActivity extends Activity {
             baseDir = new File(getFilesDir(), "dh");
         }
 
+        applyWindowChrome();
+
         FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.parseColor("#0e1116"));
+        root.setBackgroundColor(COLOR_BG);
+
+        // 主界面容器：WebView 先建好但不加载页面、不可见，等引导页检测完再放出来
+        FrameLayout mainHost = new FrameLayout(this);
+        mainHost.setBackgroundColor(COLOR_BG);
         web = new WebView(this);
-        web.setBackgroundColor(Color.parseColor("#0e1116"));
-        root.addView(web, new FrameLayout.LayoutParams(
+        web.setBackgroundColor(COLOR_BG);
+        mainHost.addView(web, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        configureWeb();
+        mainHost.setVisibility(View.GONE);
+        mainView = mainHost;
+
+        // 启动引导页（第一个页面）
+        guideView = buildGuide();
+
+        root.addView(mainHost, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(guideView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
+    }
 
+    private void configureWeb() {
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -73,13 +138,281 @@ public class MainActivity extends Activity {
 
         web.setWebChromeClient(new WebChromeClient());
         web.setWebViewClient(new WebViewClient());
-
         web.addJavascriptInterface(new ShellBridge(), "AndroidShell");
-        web.loadUrl("file:///android_asset/webui/index.html");
     }
+
+    private void applyWindowChrome() {
+        try {
+            getWindow().setBackgroundDrawable(new ColorDrawable(COLOR_BG));
+            getWindow().setStatusBarColor(COLOR_BG);
+            getWindow().setNavigationBarColor(COLOR_BG);
+            View decor = getWindow().getDecorView();
+            int flags = decor.getSystemUiVisibility();
+            flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            decor.setSystemUiVisibility(flags);
+        } catch (Throwable t) {
+            Log.w(TAG, "window chrome failed: " + t.getMessage());
+        }
+    }
+
+    /* ================= 引导页 · 第一屏 ================= */
+
+    private View buildGuide() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(COLOR_BG);
+        scroll.setFillViewport(true);
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER_HORIZONTAL);
+        col.setPadding(dp(22), dp(36), dp(22), dp(26));
+
+        // 应用图标
+        ImageView icon = new ImageView(this);
+        try {
+            Drawable appIcon = getPackageManager().getApplicationIcon(getPackageName());
+            if (appIcon != null) icon.setImageDrawable(appIcon);
+        } catch (Exception e) {
+            Log.w(TAG, "load icon failed: " + e.getMessage());
+        }
+        LinearLayout.LayoutParams iconLp =
+                new LinearLayout.LayoutParams(dp(78), dp(78));
+        iconLp.bottomMargin = dp(16);
+        col.addView(icon, iconLp);
+
+        // 标题
+        TextView title = label("DeviceHub 清理器", 22f, COLOR_FG, true);
+        title.setGravity(Gravity.CENTER);
+        col.addView(title, wrapLp(4));
+
+        TextView sub = label("首次启动 · 权限说明", 13f, COLOR_MUTED, false);
+        sub.setGravity(Gravity.CENTER);
+        col.addView(sub, wrapLp(20));
+
+        // 说明卡片
+        LinearLayout cardBox = new LinearLayout(this);
+        cardBox.setOrientation(LinearLayout.VERTICAL);
+        cardBox.setPadding(dp(18), dp(17), dp(18), dp(17));
+        cardBox.setBackground(rect(COLOR_CARD, COLOR_LINE, 18f));
+        col.addView(cardBox, fullLp(18));
+
+        cardBox.addView(label("需要 Root 权限", 16f, COLOR_FG, true), wrapLp(9));
+        cardBox.addView(label(
+                "要清理 DeviceHub 残留，必须读取系统私有目录。Root 权限仅用于以下两件事：",
+                13.5f, COLOR_MUTED, false), wrapLp(13));
+
+        addItem(cardBox, "1", "扫描 DeviceHub 相关文件",
+                "查找 com.devicehub.agent 在 /data/data、/data/user_de/0、/sdcard/Android/data 等路径下的残留。");
+        addItem(cardBox, "2", "写入与保存清理日志",
+                "把中文过程日志和总结文件写到 /sdcard/DeviceHub清理日志（路径可在设置里改）。");
+        cardBox.addView(label(
+                "除此之外不会读取、修改或上传任何其它数据；日志只保存在本机。",
+                12f, COLOR_MUTED, false), wrapLp(0));
+
+        // 检测状态
+        guideStatus = label("尚未检测", 13f, COLOR_MUTED, false);
+        guideStatus.setGravity(Gravity.CENTER);
+        col.addView(guideStatus, wrapLp(11));
+
+        // 主按钮
+        guideBtn = new TextView(this);
+        guideBtn.setText("检测 Root 权限");
+        guideBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
+        guideBtn.setTextColor(COLOR_ON_ACCENT);
+        guideBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        guideBtn.setGravity(Gravity.CENTER);
+        guideBtn.setBackground(rect(COLOR_ACCENT, 0, 14f));
+        guideBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startRootCheck();
+            }
+        });
+        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        btnLp.bottomMargin = dp(10);
+        col.addView(guideBtn, btnLp);
+
+        // 倒计时提示
+        guideHint = label("点按钮后无论结果如何，都会在 3 秒后进入主界面", 11.5f, COLOR_MUTED, false);
+        guideHint.setGravity(Gravity.CENTER);
+        col.addView(guideHint, wrapLp(14));
+
+        TextView bottom = label("未授权也能进入主界面，只是清理功能不可用。", 11.5f, COLOR_MUTED, false);
+        bottom.setGravity(Gravity.CENTER);
+        col.addView(bottom, wrapLp(0));
+
+        scroll.addView(col, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return scroll;
+    }
+
+    private void addItem(LinearLayout parent, String index, String title, String desc) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(2), 0, dp(12));
+
+        TextView num = label(index, 12f, COLOR_ON_ACCENT, true);
+        num.setGravity(Gravity.CENTER);
+        num.setBackground(circle(COLOR_ACCENT));
+        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(dp(22), dp(22));
+        np.topMargin = dp(1);
+        np.rightMargin = dp(11);
+        row.addView(num, np);
+
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        row.addView(texts, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        texts.addView(label(title, 13.5f, COLOR_FG, true), wrapLp(3));
+        texts.addView(label(desc, 12.5f, COLOR_MUTED, false), wrapLp(0));
+
+        parent.addView(row, fullLp(0));
+    }
+
+    /* ================= 检测流程 ================= */
+
+    private void startRootCheck() {
+        if (checking || mainEntered) return;
+        checking = true;
+
+        guideBtn.setBackground(rect(COLOR_BTN_OFF, 0, 14f));
+        guideBtn.setTextColor(COLOR_MUTED);
+        guideBtn.setText("正在请求 Root 权限…");
+        guideBtn.setEnabled(false);
+
+        guideStatus.setTextColor(COLOR_MUTED);
+        guideStatus.setText("请在弹出的系统窗口里点「允许」");
+        guideHint.setTextColor(COLOR_MUTED);
+        guideHint.setText("正在等待 root 管理器的授权结果…");
+
+        pool.execute(new Runnable() {
+            @Override
+            public void run() {
+                final boolean ok = probeRoot();
+                ui.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        onRootChecked(ok);
+                    }
+                });
+            }
+        });
+    }
+
+    /** 真正去执行 su，这一步才会触发 root 管理器的授权弹窗 */
+    private boolean probeRoot() {
+        String out = execProc(new String[]{"su", "-c", "id"}, ROOT_PROMPT_TIMEOUT_MS);
+        if (out == null) {
+            Log.w(TAG, "probeRoot: no output (timeout or su missing)");
+            return false;
+        }
+        Log.i(TAG, "probeRoot output: " + out.trim());
+        return out.contains("uid=0");
+    }
+
+    private void onRootChecked(boolean ok) {
+        if (isFinishing() || mainEntered) return;
+        checking = false;
+
+        if (ok) {
+            guideStatus.setTextColor(COLOR_ACCENT);
+            guideStatus.setText("✓ 已获得 Root 权限");
+            guideBtn.setBackground(rect(COLOR_ACCENT_DIM, 0, 14f));
+            guideBtn.setTextColor(COLOR_ACCENT);
+            guideBtn.setText("已授权");
+        } else {
+            guideStatus.setTextColor(COLOR_WARN);
+            guideStatus.setText("✗ 未获得 Root 权限，主界面将以只读模式运行");
+            guideBtn.setBackground(rect(COLOR_BTN_OFF, 0, 14f));
+            guideBtn.setTextColor(COLOR_MUTED);
+            guideBtn.setText("检测结束");
+        }
+        guideBtn.setEnabled(false);
+        countdown(AUTO_ENTER_SECONDS);
+    }
+
+    private void countdown(final int sec) {
+        if (mainEntered) return;
+        if (sec <= 0) {
+            enterMain();
+            return;
+        }
+        guideHint.setTextColor(COLOR_MUTED);
+        guideHint.setText(sec + " 秒后自动进入主界面…");
+        ui.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                countdown(sec - 1);
+            }
+        }, 1000L);
+    }
+
+    private void enterMain() {
+        if (mainEntered || isFinishing()) return;
+        mainEntered = true;
+        if (guideView != null) guideView.setVisibility(View.GONE);
+        if (mainView != null) mainView.setVisibility(View.VISIBLE);
+        if (web != null) web.loadUrl(WEB_URL);
+    }
+
+    /* ================= 小工具：UI ================= */
+
+    private TextView label(String text, float sp, int color, boolean bold) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        t.setTextColor(color);
+        if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setLineSpacing(dp(3), 1f);
+        return t;
+    }
+
+    private LinearLayout.LayoutParams wrapLp(int bottomMarginDp) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(bottomMarginDp);
+        return lp;
+    }
+
+    private LinearLayout.LayoutParams fullLp(int bottomMarginDp) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(bottomMarginDp);
+        return lp;
+    }
+
+    private GradientDrawable rect(int fill, int strokeColor, float radiusDp) {
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.RECTANGLE);
+        d.setColor(fill);
+        d.setCornerRadius(dp(radiusDp));
+        if (strokeColor != 0) {
+            d.setStroke(Math.max(1, dp(1)), strokeColor);
+        }
+        return d;
+    }
+
+    private GradientDrawable circle(int fill) {
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.OVAL);
+        d.setColor(fill);
+        return d;
+    }
+
+    private int dp(float value) {
+        return Math.max(0, Math.round(value * getResources().getDisplayMetrics().density));
+    }
+
+    /* ================= 生命周期 ================= */
 
     @Override
     public void onBackPressed() {
+        if (!mainEntered) {
+            super.onBackPressed();
+            return;
+        }
         if (web != null && web.canGoBack()) {
             web.goBack();
             return;
@@ -89,6 +422,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        ui.removeCallbacksAndMessages(null);
         pool.shutdownNow();
         if (web != null) {
             web.removeJavascriptInterface("AndroidShell");
@@ -155,10 +489,10 @@ public class MainActivity extends Activity {
             });
         }
 
-        /** 同步判断是否有 root（只在页面加载时调一次） */
+        /** 同步判断是否有 root（页面加载时调一次；此时引导页已经授权过，不会再弹窗） */
         @JavascriptInterface
         public boolean isRoot() {
-            String out = execProc(new String[]{"su", "-c", "id"});
+            String out = execProc(new String[]{"su", "-c", "id"}, ROOT_PROMPT_TIMEOUT_MS);
             return out != null && out.contains("uid=0");
         }
 
@@ -181,20 +515,37 @@ public class MainActivity extends Activity {
     /* ---------------- 命令执行 ---------------- */
 
     private String runShell(String cmd) {
-        String out = execProc(new String[]{"su", "-c", cmd});
+        String out = execProc(new String[]{"su", "-c", cmd}, 0L);
         if (out == null) {
             // 没有 su：降级用普通 shell，界面上会因为权限不足而报错，但不会崩
-            out = execProc(new String[]{"/system/bin/sh", "-c", cmd});
+            out = execProc(new String[]{"/system/bin/sh", "-c", cmd}, 0L);
         }
         return out == null ? "" : out;
     }
 
     private String execProc(String[] argv) {
+        return execProc(argv, 0L);
+    }
+
+    /**
+     * @param timeoutMs 大于 0 时，超时就放弃并返回 null（root 授权弹窗可能一直不响应）
+     */
+    private String execProc(String[] argv, long timeoutMs) {
         Process p = null;
         try {
             ProcessBuilder pb = new ProcessBuilder(argv);
             pb.redirectErrorStream(true);
             p = pb.start();
+
+            if (timeoutMs > 0L) {
+                if (!p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+                    Log.w(TAG, "exec timeout after " + timeoutMs + "ms: " + argv[0]);
+                    return null;
+                }
+            } else {
+                p.waitFor();
+            }
+
             StringBuilder sb = new StringBuilder();
             try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
                 String line;
@@ -206,7 +557,6 @@ public class MainActivity extends Activity {
                     sb.append(line).append('\n');
                 }
             }
-            p.waitFor();
             return sb.toString();
         } catch (Exception e) {
             Log.w(TAG, "exec failed: " + e.getMessage());
