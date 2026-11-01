@@ -72,7 +72,7 @@ keytool -genkeypair -v -keystore release.jks -alias devicehub \
 
 `app/build.gradle` 发现 `KEYSTORE_PATH` 指向的文件存在就用它签，否则退回 debug，所以不配也能正常构建。
 
-> 注意：v1.0.2 及更早版本的签名已经找不回来了，从旧版升到 v1.0.3 仍需卸载一次；v1.0.3 之后就能一直覆盖升级。
+> 注意：从旧版本升级到本版仍需卸载一次（历史版本的签名已经找不回来）；按上面的步骤配好 Secret 之后，再往后的版本就能直接覆盖升级了。
 
 ## 说明
 
